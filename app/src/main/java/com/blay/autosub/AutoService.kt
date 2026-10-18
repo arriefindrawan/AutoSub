@@ -70,10 +70,12 @@ class AutoService : AccessibilityService() {
                 val words = lines.flatMap { it.elements }
                 val seconds = readSeconds(words)
 
-                // 1) Kalau 0 detik -> tunggu zeroDelayMs, baru klik NEXT VIDEO
-                if (seconds == 0) {
-                    val now = System.currentTimeMillis()
-                    if (zeroSince == 0L) zeroSince = now
+                // 1) Begitu 0 detik terdeteksi, mulai timer. Setelah zeroDelayMs -> klik NEXT VIDEO
+                //    (tetap klik walau angkanya sudah ga kebaca, kecuali sudah > 0 = video sudah pindah)
+                val now = System.currentTimeMillis()
+                if (seconds == 0 && zeroSince == 0L) zeroSince = now
+                if (seconds != null && seconds > 0) zeroSince = 0L
+                if (zeroSince != 0L) {
                     if (now - zeroSince < zeroDelayMs) {
                         schedule(500)
                         return@addOnSuccessListener
@@ -88,7 +90,6 @@ class AutoService : AccessibilityService() {
                     schedule(4000)
                     return@addOnSuccessListener
                 }
-                if (seconds != null) zeroSince = 0L
                 // 2) Kalau ada tombol play merah -> klik play
                 findPlay(bmp)?.let { (px, py) ->
                     tap(px, py); schedule(3000); return@addOnSuccessListener
