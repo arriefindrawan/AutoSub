@@ -61,40 +61,50 @@ class AutoService : AccessibilityService() {
     }
 
     private fun analyze(bmp: Bitmap) {
-        // 1) Cari tombol play YouTube (merah) di area video
-        findPlay(bmp)?.let { (x, y) ->
-            tap(x, y); schedule(3000); return
-        }
-        // 2) OCR: baca "seconds" dan "NEXT VIDEO"
         recognizer.process(InputImage.fromBitmap(bmp, 0))
             .addOnSuccessListener { text ->
                 val lines = text.textBlocks.flatMap { it.lines }
-                val secLine = lines.firstOrNull { it.text.contains("second", true) }
-                var seconds: Int? = null
-                if (secLine != null) {
-                    seconds = Regex("\\d+").find(secLine.text)?.value?.toIntOrNull()
-                    if (seconds == null) {
-                        // angka mungkin terpisah dari kata "seconds"
-                        val cy = secLine.boundingBox?.centerY() ?: 0
-                        seconds = lines.filter {
-                            val b = it.boundingBox
-                            b != null && Math.abs(b.centerY() - cy) < 60 &&
-                                b.centerX() < (secLine.boundingBox?.centerX() ?: 0)
-                        }.firstNotNullOfOrNull { Regex("^\\d+$").find(it.text.trim())?.value?.toInt() }
-                    }
-                }
+                val words = lines.flatMap { it.elements }
+                val seconds = readSeconds(words)
+
+                // 1) Kalau 0 detik -> klik NEXT VIDEO
                 if (seconds == 0) {
-                    val next = lines.firstOrNull {
+                    val box = lines.firstOrNull {
                         it.text.replace(" ", "").contains("NEXTVIDEO", true)
                     }?.boundingBox
-                    if (next != null) {
-                        tap(next.centerX().toFloat(), next.centerY().toFloat())
-                        schedule(4000); return@addOnSuccessListener
-                    }
+                    val x = box?.centerX()?.toFloat() ?: (bmp.width * 0.76f)
+                    val y = box?.centerY()?.toFloat() ?: (bmp.height * 0.67f)
+                    tap(x, y)
+                    schedule(4000)
+                    return@addOnSuccessListener
+                }
+                // 2) Kalau ada tombol play merah -> klik play
+                findPlay(bmp)?.let { (px, py) ->
+                    tap(px, py); schedule(3000); return@addOnSuccessListener
                 }
                 schedule(1500)
             }
             .addOnFailureListener { schedule(2000) }
+    }
+
+    // Ambil angka tepat di kiri kata "seconds"
+    private fun readSeconds(words: List<com.google.mlkit.vision.text.Text.Element>): Int? {
+        val sec = words.firstOrNull { it.text.contains("second", true) } ?: return null
+        Regex("\\d+").find(sec.text)?.value?.toIntOrNull()?.let { return it }
+        val sb = sec.boundingBox ?: return null
+        val left = words.filter {
+            val b = it.boundingBox
+            it !== sec && b != null &&
+                Math.abs(b.centerY() - sb.centerY()) < sb.height() &&
+                b.centerX() < sb.centerX()
+        }.maxByOrNull { it.boundingBox!!.centerX() } ?: return null
+        val t = left.text.trim().map {
+            when (it) { 'O', 'o', 'D', 'Q' -> '0'; 'l', 'I', '|' -> '1'; else -> it }
+        }.joinToString("")
+        t.toIntOrNull()?.let { return it }
+        // Di kiri "seconds" cuma ada kata "coins" -> angkanya ga kebaca, berarti 0
+        if (left.text.contains("coin", true)) return 0
+        return null
     }
 
     // Cari cluster piksel merah YouTube di area video (19%-57% tinggi layar)
