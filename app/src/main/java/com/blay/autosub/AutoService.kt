@@ -22,6 +22,8 @@ class AutoService : AccessibilityService() {
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private var running = false
     private var btn: Button? = null
+    private val zeroDelayMs = 3000L   // tunggu berapa lama setelah 0 detik sebelum klik Next Video
+    private var zeroSince = 0L        // waktu pertama kali terdeteksi 0 detik (0 = belum)
 
     override fun onServiceConnected() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -29,6 +31,7 @@ class AutoService : AccessibilityService() {
             text = "START"
             setOnClickListener {
                 running = !running
+                zeroSince = 0L
                 text = if (running) "STOP" else "START"
                 if (running) schedule(500)
             }
@@ -67,17 +70,25 @@ class AutoService : AccessibilityService() {
                 val words = lines.flatMap { it.elements }
                 val seconds = readSeconds(words)
 
-                // 1) Kalau 0 detik -> klik NEXT VIDEO
+                // 1) Kalau 0 detik -> tunggu zeroDelayMs, baru klik NEXT VIDEO
                 if (seconds == 0) {
+                    val now = System.currentTimeMillis()
+                    if (zeroSince == 0L) zeroSince = now
+                    if (now - zeroSince < zeroDelayMs) {
+                        schedule(500)
+                        return@addOnSuccessListener
+                    }
                     val box = lines.firstOrNull {
                         it.text.replace(" ", "").contains("NEXTVIDEO", true)
                     }?.boundingBox
                     val x = box?.centerX()?.toFloat() ?: (bmp.width * 0.76f)
                     val y = box?.centerY()?.toFloat() ?: (bmp.height * 0.67f)
                     tap(x, y)
+                    zeroSince = 0L
                     schedule(4000)
                     return@addOnSuccessListener
                 }
+                if (seconds != null) zeroSince = 0L
                 // 2) Kalau ada tombol play merah -> klik play
                 findPlay(bmp)?.let { (px, py) ->
                     tap(px, py); schedule(3000); return@addOnSuccessListener
@@ -107,16 +118,20 @@ class AutoService : AccessibilityService() {
         return null
     }
 
-    // Cari cluster piksel merah YouTube di area video (19%-57% tinggi layar)
+    // Cari cluster piksel merah YouTube di area video (19%-57% tinggi layar).
+    // Step dan ambang menyesuaikan resolusi layar.
     private fun findPlay(b: Bitmap): Pair<Float, Float>? {
-        var sx = 0L; var sy = 0L; var n = 0
+        val step = maxOf(2, b.width / 270)
         val y0 = (b.height * 0.19).toInt(); val y1 = (b.height * 0.57).toInt()
-        for (y in y0 until y1 step 4) for (x in 0 until b.width step 4) {
+        var sx = 0L; var sy = 0L; var n = 0; var total = 0
+        for (y in y0 until y1 step step) for (x in 0 until b.width step step) {
+            total++
             val p = b.getPixel(x, y)
             val r = (p shr 16) and 0xFF; val g = (p shr 8) and 0xFF; val bl = p and 0xFF
             if (r > 220 && g < 40 && bl < 70) { sx += x; sy += y; n++ }
         }
-        return if (n > 800) Pair(sx.toFloat() / n, sy.toFloat() / n) else null
+        // tombol play kira-kira >1.2% dari area yang discan
+        return if (total > 0 && n > total * 0.012) Pair(sx.toFloat() / n, sy.toFloat() / n) else null
     }
 
     private fun tap(x: Float, y: Float) {
